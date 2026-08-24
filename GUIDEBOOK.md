@@ -1,854 +1,271 @@
 # CDN Simulator Guidebook
 
-> A hands-on simulator for understanding geographic CDN routing, caching, cache hits/misses, and latency.
+> A hands-on simulator for understanding geographic CDN routing, caching, TTL expiration, cache isolation, and origin failover.
 
 ## 1. Core Concepts
 
 ### What is a CDN?
 
-A **Content Delivery Network (CDN)** is a group of geographically distributed servers that speeds up the delivery of web content by bringing copies of that content closer to users.
-
-Instead of every request traveling to one central server, users can be served by a nearby **Edge Server**.
+A Content Delivery Network (CDN) is a group of geographically distributed servers that speeds up content delivery by serving users from locations closer to them.
 
 ### Origin Server vs Edge Server
 
-* **Origin Server** — The main server and source of truth for the content.
-* **Edge Server (CDN)** — A server located closer to the user that temporarily stores copies of content from the Origin Server.
+- Origin Server: The source of truth for the content.
+- Edge Server (CDN): A nearby server that stores temporary copies of content.
 
 ### Cache HIT vs Cache MISS
 
-**Cache MISS**
-
-The requested content is not available on the selected Edge Server.
+Cache MISS:
 
 ```text
-Client → Router → Nearest CDN → Cache MISS → Origin
-       ← Router ← Nearest CDN ← Content ──────
+Client -> Router -> Nearest CDN -> Cache MISS -> Origin
+       <- Router <- Nearest CDN <- Content
 ```
 
-The CDN must contact the Origin Server, resulting in higher latency.
+The CDN must contact an origin server, so the response is slower.
 
-**Cache HIT**
-
-The requested content is already stored on the selected Edge Server.
+Cache HIT:
 
 ```text
-Client → Router → Nearest CDN → Cache HIT
-       ← Router ← Nearest CDN
+Client -> Router -> Nearest CDN -> Cache HIT
+       <- Router <- Nearest CDN
 ```
 
-The Origin Server is bypassed, resulting in a much faster response.
+The content is already cached, so the response is much faster.
+
+### Cache TTL
+
+Each CDN cache entry has a Time To Live (TTL). In this project, cached content expires after `60` seconds. Once expired, the next request behaves like a cache miss and refreshes the cached value from an origin server.
+
+### Origin Fallback
+
+If the primary origin is unavailable, the CDN tries a fallback origin before returning an error. This keeps the simulator available even when the main origin is offline.
 
 ---
 
-## 2. Sequence of Events
+## 2. Project Architecture
 
-### First Request — Cache MISS
-
-When content is requested for the first time:
+The simulator consists of six processes:
 
 ```text
-Client
-  ↓
-Router
-  ↓
-Nearest CDN
-  ↓
-Content not in cache
-  ↓
-Origin Server
-  ↓
-Nearest CDN
-  ↓
-Client
+Client -> Router -> Nearest CDN -> Primary Origin
+                                -> Fallback Origin
 ```
 
-**Result:** Slow response because the request has to reach the Origin Server.
+Default ports:
 
-### Second Request — Cache HIT
+| Component | Port | Responsibility |
+| --- | ---: | --- |
+| Primary Origin | `8000` | Main content source |
+| Bangalore CDN | `8001` | South India edge cache |
+| North India CDN | `8002` | North India edge cache |
+| Router | `8003` | Selects the nearest CDN |
+| Fallback Origin | `8004` | Backup content source |
+| Client | local CLI | Sends requests |
 
-When the same content is requested again from the same CDN:
-
-```text
-Client
-  ↓
-Router
-  ↓
-Nearest CDN
-  ↓
-Content found in cache
-  ↓
-Client
-```
-
-**Result:** Very fast response because the Origin Server is not contacted.
+Because all components run on the same machine, different ports simulate different services.
 
 ---
 
 ## 3. How Geographic Routing Works
 
-The simulator determines which CDN should handle a request based on the client's geographic location.
+The client sends:
 
-The client provides:
+- Latitude
+- Longitude
+- Content ID
 
-* Latitude
-* Longitude
+The router calculates the distance from the client to each CDN location using the Haversine formula and selects the nearest one.
 
-The Router calculates the distance between the client and each available CDN location.
+Example:
 
-### Haversine Formula
-
-The simulator uses the **Haversine formula** to calculate the great-circle distance between two points on Earth.
-
-The formula is useful because the Earth is approximately spherical.
-
-Conceptually:
-
-```text
-Client Location
-      │
-      ├──────────────→ Bangalore CDN
-      │                 Distance calculated
-      │
-      └──────────────→ North India CDN
-                        Distance calculated
-```
-
-The Router selects the CDN with the shortest calculated distance.
-
-### Example
-
-For a client located in Chennai:
-
-```text
-Chennai
-   │
-   ├── Bangalore CDN    ≈ 290 km
-   │
-   └── North India CDN  ≈ much farther
-```
-
-Therefore, the Router selects the **Bangalore CDN**.
+- Chennai is usually routed to Bangalore CDN.
+- Delhi is usually routed to North India CDN.
 
 ---
 
-## 4. Project Architecture
+## 4. Request Flow
 
-The simulator consists of five processes:
+### First Request
 
 ```text
-                    ┌──────────────────┐
-                    │      Client      │
-                    │      :8004       │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │      Router      │
-                    │      :8003       │
-                    └────────┬─────────┘
-                             │
-                    ┌────────┴─────────┐
-                    ▼                  ▼
-          ┌─────────────────┐  ┌─────────────────┐
-          │ Bangalore CDN   │  │ North India CDN │
-          │      :8001      │  │      :8002      │
-          └────────┬────────┘  └────────┬────────┘
-                   │                    │
-                   └──────────┬─────────┘
-                              ▼
-                    ┌──────────────────┐
-                    │  Origin Server   │
-                    │      :8000       │
-                    └──────────────────┘
+Client
+  |
+Router
+  |
+Nearest CDN
+  |
+Cache MISS
+  |
+Primary Origin or Fallback Origin
+  |
+CDN stores response in cache
+  |
+Client
 ```
 
-Because all components run on the same physical computer, different **ports** are used to simulate separate servers.
+### Repeated Request Before TTL Expiry
 
-| Component       |   Port | Responsibility               |
-| --------------- | -----: | ---------------------------- |
-| Origin Server   | `8000` | Stores the original content  |
-| Bangalore CDN   | `8001` | Simulates an edge cache      |
-| North India CDN | `8002` | Simulates another edge cache |
-| Router          | `8003` | Selects the nearest CDN      |
-| Client          | `8004` | Sends requests               |
+```text
+Client
+  |
+Router
+  |
+Nearest CDN
+  |
+Cache HIT
+  |
+Client
+```
+
+### Request After TTL Expiry
+
+```text
+Client
+  |
+Router
+  |
+Nearest CDN
+  |
+Expired cache entry removed
+  |
+Cache MISS
+  |
+Origin fetch
+```
 
 ---
 
 ## 5. Latency Simulation
 
-A real local application can communicate between processes in less than a millisecond.
+The simulator intentionally adds delays so cache behavior is easy to observe.
 
-That would make the difference between a CDN cache HIT and MISS difficult to observe.
+- Origin latency: about `200 ms`
+- CDN latency: about `20 ms`
 
-Therefore, the simulator artificially introduces delays using Python's `time.sleep()`.
+That means:
 
-### Simulated Latencies
-
-```text
-Origin Server
-    ↓
-~200 ms delay
-
-CDN Server
-    ↓
-~20 ms delay
-```
-
-A cache MISS therefore takes significantly longer than a cache HIT.
-
-For example:
-
-```text
-Cache MISS
-Client → CDN → Origin → CDN → Client
-             ~200 ms+
-```
-
-versus:
-
-```text
-Cache HIT
-Client → CDN → Client
-             ~20 ms
-```
-
-These delays are intentionally simulated for educational purposes.
+- A cache miss is noticeably slower.
+- A cache hit is noticeably faster.
 
 ---
 
-# 6. Test Scenarios
+## 6. How to Run
 
-## Scenario 1 — Geographic Routing
-
-### Objective
-
-Verify that the Router selects the CDN geographically closest to the client.
-
-### Test
-
-Select:
-
-```text
-Location: Chennai
-```
-
-The Router should calculate distances and select:
-
-```text
-Bangalore CDN
-```
-
-Expected output:
-
-```text
-Bangalore: ~290 km
-```
-
----
-
-## Scenario 2 — North India Routing
-
-### Objective
-
-Verify routing for a client located near the North India CDN.
-
-### Test
-
-Select:
-
-```text
-Location: Delhi
-```
-
-The Router should select:
-
-```text
-North India CDN
-```
-
-Expected output:
-
-```text
-North India: 0.0 km
-```
-
-The exact distance may depend on the coordinates configured in the simulator.
-
----
-
-## Scenario 3 — Cache MISS → Cache HIT
-
-### Objective
-
-Observe how caching improves response time.
-
-### Step 1 — Request Content `101`
-
-Select:
-
-```text
-Location: Chennai
-Content ID: 101
-```
-
-Expected:
-
-```text
-CDN: Bangalore
-Cache Status: [MISS]
-Response Time: ~240 ms
-```
-
-The content is not yet stored in the Bangalore CDN cache.
-
-The request therefore goes to the Origin Server.
-
-### Step 2 — Request Content `101` Again
-
-Keep the location as:
-
-```text
-Chennai
-```
-
-Request:
-
-```text
-Content ID: 101
-```
-
-Expected:
-
-```text
-CDN: Bangalore
-Cache Status: [HIT]
-Response Time: ~20–30 ms
-```
-
-The Bangalore CDN now has content `101` cached.
-
-The Origin Server is bypassed.
-
----
-
-## Scenario 4 — Cache Isolation
-
-### Objective
-
-Demonstrate that different Edge Servers maintain independent caches.
-
-### Step 1
-
-Request:
-
-```text
-Location: Chennai
-Content ID: 101
-```
-
-This populates:
-
-```text
-Bangalore CDN cache
-```
-
-### Step 2
-
-Change the location to:
-
-```text
-Delhi
-```
-
-Request:
-
-```text
-Content ID: 101
-```
-
-Expected:
-
-```text
-CDN: North India
-Cache Status: [MISS]
-Response Time: ~240 ms
-```
-
-### Why is it a MISS?
-
-Because the caches are independent.
-
-The content exists in:
-
-```text
-Bangalore CDN
-```
-
-but not in:
-
-```text
-North India CDN
-```
-
-Therefore, the North India CDN must contact the Origin Server.
-
----
-
-# 7. Real World vs Simulator
-
-This project is an educational simulation rather than a production CDN.
-
-| Simulator               | Real CDN                                           |
-| ----------------------- | -------------------------------------------------- |
-| Python Router           | DNS, Anycast, BGP, load balancing, etc.            |
-| Python dictionary cache | Redis, Memcached, SSD/RAM-based caching systems    |
-| Local processes         | Globally distributed physical/cloud infrastructure |
-| Different ports         | Different servers/regions/PoPs                     |
-| `time.sleep()` latency  | Actual network latency                             |
-| Haversine routing       | More sophisticated traffic and routing systems     |
-
-Real CDN providers such as Cloudflare and AWS CloudFront use highly distributed infrastructure and sophisticated routing, caching, security, and traffic-management systems.
-
-The simulator simplifies these mechanisms so their core behavior can be observed directly.
-
----
-
-# 8. How to Run
-
-## Prerequisites
-
-Make sure Python is installed.
-
-Verify it with:
-
-```cmd
-python --version
-```
-
-If `python` is not available but the Python launcher is installed, you can also check:
-
-```cmd
-py --version
-```
-
----
-
-## Step 1 — Create a Virtual Environment
-
-Open a terminal in the project directory:
+### Step 1: Create and activate a virtual environment
 
 ```cmd
 python -m venv venv
-```
-
-Activate it:
-
-```cmd
 venv\Scripts\activate
 ```
 
-If activation succeeds, your terminal should show something similar to:
-
-```text
-(venv) C:\path\to\GeoCDN>
-```
-
----
-
-## Step 2 — Install Dependencies
-
-Run:
+### Step 2: Install dependencies
 
 ```cmd
 pip install -r requirements.txt
 ```
 
----
+### Step 3: Start the services
 
-## Step 3 — Open Five Terminals
-
-Open **five separate Command Prompt or PowerShell windows**.
-
-Make sure each terminal is inside the project directory.
-
-Activate the virtual environment in each terminal:
+Open separate terminals and run:
 
 ```cmd
-venv\Scripts\activate
-```
-
----
-
-## Terminal 1 — Origin Server
-
-```cmd
-venv\Scripts\activate
 python origin_server.py
 ```
 
-The Origin Server should start on:
-
-```text
-http://localhost:8000
-```
-
----
-
-## Terminal 2 — Bangalore CDN
-
 ```cmd
-venv\Scripts\activate
 python bangalore_cdn.py
 ```
 
-The Bangalore CDN should start on:
-
-```text
-http://localhost:8001
-```
-
----
-
-## Terminal 3 — North India CDN
-
 ```cmd
-venv\Scripts\activate
 python north_cdn.py
 ```
 
-The North India CDN should start on:
-
-```text
-http://localhost:8002
-```
-
----
-
-## Terminal 4 — Router
-
 ```cmd
-venv\Scripts\activate
 python router.py
 ```
 
-The Router should start on:
-
-```text
-http://localhost:8003
+```cmd
+python origin_fallback.py
 ```
 
----
-
-## Terminal 5 — Client
-
 ```cmd
-venv\Scripts\activate
 python client.py
 ```
 
-The client interface should now appear.
+---
+
+## 7. Test Scenarios
+
+### Scenario 1: Geographic Routing
+
+Request content `101` from Chennai. The router should usually choose Bangalore CDN.
+
+Request content `101` from Delhi. The router should usually choose North India CDN.
+
+### Scenario 2: Cache MISS -> HIT
+
+1. Request content `101` from Chennai.
+2. Request content `101` again from Chennai.
+
+Expected:
+
+- First request: `MISS`
+- Second request: `HIT`
+
+### Scenario 3: TTL Expiration
+
+1. Request content `101` from Chennai.
+2. Wait more than `60` seconds.
+3. Request content `101` again from Chennai.
+
+Expected:
+
+- The cached item expires.
+- The later request becomes a `MISS` again.
+
+### Scenario 4: Cache Isolation
+
+1. Request content `101` from Chennai.
+2. Request content `101` from Delhi.
+
+Expected:
+
+- Bangalore CDN may have the item cached.
+- North India CDN still starts with its own cache state.
+
+### Scenario 5: Fallback Origin
+
+1. Stop `origin_server.py`.
+2. Keep `origin_fallback.py` running.
+3. Request an existing content ID.
+
+Expected:
+
+- The CDN should fetch from the fallback origin.
+- The response content should indicate backup-origin data.
 
 ---
 
-# 9. First Demonstration
+## 8. Real World vs Simulator
 
-Follow these steps in order.
+| Simulator | Real CDN |
+| --- | --- |
+| Python router | DNS, Anycast, BGP, load balancing |
+| In-memory dictionary cache | Redis, Memcached, SSD/RAM caches |
+| Local processes | Distributed global infrastructure |
+| Fixed TTL in config | Dynamic caching rules and policies |
+| Fallback origin process | Multi-origin or failover infrastructure |
+| Simulated latency | Real network latency |
 
-## Step 1 — Request From Chennai
-
-In **Terminal 5**, select:
-
-```text
-2
-```
-
-for:
-
-```text
-Chennai
-```
-
-Then enter:
-
-```text
-101
-```
-
-as the Content ID.
-
-### Expected Behavior
-
-The Router calculates the distance to each CDN.
-
-You should see something similar to:
-
-```text
-Bangalore: 290 km
-```
-
-The request should be routed to:
-
-```text
-Bangalore CDN
-```
-
-Because content `101` has not previously been requested:
-
-```text
-Cache Status: [MISS]
-```
-
-The request must reach the Origin Server.
-
-Expected response time:
-
-```text
-~240 ms
-```
+This simulator is intentionally simple so the core CDN ideas are easy to observe.
 
 ---
 
-## Step 2 — Request From Delhi
-
-When the client menu appears again, select:
-
-```text
-4
-```
-
-for:
-
-```text
-Delhi
-```
-
-Then request:
-
-```text
-101
-```
-
-### Expected Behavior
-
-The Router should select:
-
-```text
-North India CDN
-```
-
-because it is closest to Delhi.
-
-You should see approximately:
-
-```text
-North India: 0.0 km
-```
-
-The cache status should be:
-
-```text
-[MISS]
-```
-
-Even though content `101` was previously requested from Chennai, that request populated the **Bangalore CDN cache**, not the North India CDN cache.
-
-Expected response time:
-
-```text
-~240 ms
-```
-
----
-
-## Step 3 — Request From Chennai Again
-
-Select:
-
-```text
-2
-```
-
-for:
-
-```text
-Chennai
-```
-
-Then enter:
-
-```text
-101
-```
-
-again.
-
-### Expected Behavior
-
-The Router selects:
-
-```text
-Bangalore CDN
-```
-
-The Bangalore CDN already has content `101`.
-
-Therefore:
-
-```text
-Cache Status: [HIT]
-```
-
-The Origin Server is bypassed.
-
-Expected response time:
-
-```text
-~20–30 ms
-```
-
----
-
-# 10. Expected Demonstration Flow
-
-The complete demonstration should look conceptually like this:
-
-```text
-┌─────────────────────────────────────────────┐
-│ 1. Chennai → Content 101                   │
-│                                             │
-│ Router → Bangalore CDN                     │
-│ Cache → MISS                                │
-│ Origin → Fetch content                      │
-│ Response → ~240 ms                          │
-└─────────────────────────────────────────────┘
-                     │
-                     ▼
-          Content 101 cached
-          in Bangalore CDN
-                     │
-                     ▼
-┌─────────────────────────────────────────────┐
-│ 2. Delhi → Content 101                     │
-│                                             │
-│ Router → North India CDN                   │
-│ Cache → MISS                                │
-│ Origin → Fetch content                      │
-│ Response → ~240 ms                          │
-└─────────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────┐
-│ 3. Chennai → Content 101                   │
-│                                             │
-│ Router → Bangalore CDN                     │
-│ Cache → HIT                                 │
-│ Origin → Bypassed                            │
-│ Response → ~20–30 ms                        │
-└─────────────────────────────────────────────┘
-```
-
-This demonstrates two important CDN concepts:
-
-1. **Geographic routing**
-2. **Edge caching**
-
----
-
-# 11. What You Should Observe
-
-During the demonstration, pay attention to these four things:
-
-### 1. CDN Selection
-
-The Router should select the CDN based on geographic distance.
-
-### 2. Cache Status
-
-A new request should produce:
-
-```text
-[MISS]
-```
-
-A repeated request from the same CDN should produce:
-
-```text
-[HIT]
-```
-
-### 3. Response Time
-
-A MISS should be significantly slower:
-
-```text
-~240 ms
-```
-
-A HIT should be much faster:
-
-```text
-~20–30 ms
-```
-
-### 4. Cache Isolation
-
-A cached object on one Edge Server should not automatically appear on another Edge Server.
-
-For example:
-
-```text
-Bangalore CDN
-└── 101 ✓
-
-North India CDN
-└── 101 ✗
-```
-
-This explains why the Delhi request still produces a cache MISS.
-
----
-
-# 12. Key Takeaways
-
-After completing the demonstration, you should understand:
-
-* What a CDN is.
-* Why CDNs use geographically distributed Edge Servers.
-* The difference between an Origin Server and an Edge Server.
-* What a cache HIT means.
-* What a cache MISS means.
-* How geographic routing can select a nearby CDN.
-* How the Haversine formula can calculate geographic distance.
-* Why cache HITs are faster than cache MISSes.
-* Why separate CDN locations can have independent caches.
-* How a CDN reduces the number of requests reaching the Origin Server.
-* How a real CDN differs from this simplified simulator.
-
----
-
-# 13. One-Line Mental Model
-
-The entire project can be understood with this simple flow:
-
-```text
-Find the nearest CDN
-        ↓
-Check its cache
-        ↓
-    ┌───┴───┐
-    │       │
-   HIT     MISS
-    │       │
-    ▼       ▼
- Serve    Ask Origin
-    │       │
-    │       ▼
-    │     Cache
-    │       │
-    └───┬───┘
-        ▼
-      Client
-```
-
-**Nearest CDN + caching = faster content delivery.**
+## 9. Key Takeaways
+
+- The router sends users to the nearest CDN based on coordinates.
+- Each CDN maintains its own cache.
+- Cache hits are faster than cache misses.
+- Cached data expires after the configured TTL.
+- If the primary origin is down, the CDN can fall back to a backup origin.
