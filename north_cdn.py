@@ -1,7 +1,7 @@
 """
 north_cdn.py
 Simulates a CDN Edge Server located in Delhi, North India.
-It has an identical structure to Bangalore CDN, but maintains its own independent cache.
+Includes TTL cache handling and Origin Fallback logic.
 """
 
 import time
@@ -23,37 +23,49 @@ def get_content(content_id: str):
     # Simulate small edge server processing latency
     time.sleep(config.CDN_LATENCY)
     
-    # 1. Check Cache
+    # 1. Check Cache (TTL logic is handled inside cache.py)
     cached_data = cdn_cache.get(content_id)
-    
     if cached_data:
-        # CACHE HIT
         return {
             "content": cached_data["content"],
-            "served_by": "North India CDN",
+            "served_by": app.title, 
             "cache_status": "HIT"
         }
         
-    # 2. CACHE MISS -> Fetch from Origin
+    # 2. CACHE MISS -> Fetch from Origin with Fallback Logic
     try:
-        origin_response = requests.get(f"{config.ORIGIN_URL}/content/{content_id}", timeout=5)
+        # ATTEMPT 1: Primary Origin
+        origin_response = requests.get(f"{config.ORIGIN_URL}/content/{content_id}", timeout=2)
         if origin_response.status_code == 404:
             raise HTTPException(status_code=404, detail="Content not found")
         origin_response.raise_for_status()
-        
         data = origin_response.json()
         
-        # 3. Store in cache for future requests
-        cdn_cache.set(content_id, data)
-        
-        return {
-            "content": data["content"],
-            "served_by": "North India CDN",
-            "cache_status": "MISS"
-        }
-        
+    except HTTPException:
+        raise  # Pass through the 404 instantly
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Error contacting Origin: {str(e)}")
+        print(f"[{app.title}] Primary Origin offline. Triggering Fallback...")
+        
+        try:
+            # ATTEMPT 2: Fallback Origin
+            origin_response = requests.get(f"{config.ORIGIN_FALLBACK_URL}/content/{content_id}", timeout=2)
+            if origin_response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Content not found")
+            origin_response.raise_for_status()
+            data = origin_response.json()
+            
+        except requests.exceptions.RequestException:
+            # BOTH Origins are down
+            raise HTTPException(status_code=502, detail="CDN Error: Both Primary and Fallback Origins are offline.")
+
+    # 3. Store in cache (sets the new TTL)
+    cdn_cache.set(content_id, data)
+    
+    return {
+        "content": data["content"],
+        "served_by": app.title,
+        "cache_status": "MISS"
+    }
 
 @app.get("/cache/stats")
 def get_cache_stats():
