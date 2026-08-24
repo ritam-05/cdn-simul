@@ -1,4 +1,4 @@
-# GeoCDN Simulator Guidebook
+# CDN Simulator Guidebook
 
 > A hands-on simulator for understanding geographic CDN routing, caching, cache hits/misses, and latency.
 
