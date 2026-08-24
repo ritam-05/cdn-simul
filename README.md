@@ -1,4 +1,4 @@
-# GeoCDN Simulator
+# CDN Simulator
 
 A beginner-friendly, Python-based simulator explaining how a Content Delivery Network (CDN) uses geographic routing and edge caching to serve content faster.
 
